@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contextual AI Translator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { background-color: #0b0f19; }
+    .glass-card { background: rgba(17, 24, 39, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col font-sans">
+  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md px-6 py-3.5 flex items-center justify-between sticky top-0 z-50">
+    <div class="flex items-center space-x-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">
+        <i class="fa-solid fa-language text-lg"></i>
+      </div>
+      <div>
+        <h1 class="text-base md:text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent leading-none">ContextTranslate AI</h1>
+        <span class="text-[10px] text-slate-500 font-mono">POWERED BY GEMINI + EDGE-TTS</span>
+      </div>
+    </div>
+    <select id="toneSelect" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none cursor-pointer">
+      <option value="natural">🎯 Tono: Natural / Fluido</option>
+      <option value="formal">👔 Tono: Formal / Académico</option>
+      <option value="casual">☕ Tono: Coloquial / Diario</option>
+      <option value="business">💼 Tono: Negocios / Ejecutivo</option>
+    </select>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div class="glass-card rounded-2xl p-5 flex flex-col shadow-xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+        <div class="flex items-center space-x-2">
+          <select id="sourceLang" class="bg-transparent font-semibold text-sm text-slate-300 focus:outline-none cursor-pointer">
+            <option value="auto">🌐 Detectar idioma</option>
+            <option value="es" selected>Español</option>
+            <option value="en">Inglés</option>
+            <option value="fr">Francés</option>
+            <option value="de">Alemán</option>
+            <option value="it">Italiano</option>
+            <option value="pt">Portugués</option>
+          </select>
+          <button id="swapLangBtn" title="Intercambiar idiomas" class="text-slate-500 hover:text-blue-400 text-xs px-2 py-1 transition">
+            <i class="fa-solid fa-arrow-right-arrow-left"></i>
+          </button>
+        </div>
+        <button id="clearBtn" title="Limpiar texto" class="text-slate-500 hover:text-slate-300 text-xs px-2 py-1"><i class="fa-solid fa-trash-can"></i></button>
+      </div>
+      <textarea id="inputText" rows="8" placeholder="Escribe el texto a traducir... (Ctrl + Enter)" class="w-full bg-transparent border-0 resize-none focus:outline-none text-slate-100 text-base md:text-lg placeholder-slate-600 flex-1"></textarea>
+      <div class="flex items-center justify-between pt-4 mt-2 border-t border-slate-800">
+        <span id="charCount" class="text-xs text-slate-500 font-mono">0 caracteres</span>
+        <button id="translateBtn" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl flex items-center space-x-2 transition shadow-lg shadow-blue-600/30">
+          <span>Traducir</span><i class="fa-solid fa-bolt text-xs"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="glass-card rounded-2xl p-5 flex flex-col shadow-xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+        <div class="flex items-center space-x-2">
+          <select id="targetLang" class="bg-transparent font-semibold text-sm text-blue-400 focus:outline-none cursor-pointer">
+            <option value="en" selected>Inglés (US)</option>
+            <option value="es">Español</option>
+            <option value="fr">Francés</option>
+            <option value="de">Alemán</option>
+            <option value="it">Italiano</option>
+            <option value="pt">Portugués</option>
+          </select>
+          <span id="toneBadge" class="hidden px-2.5 py-0.5 text-[10px] font-mono uppercase bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20"></span>
+        </div>
+        <div class="flex items-center space-x-1 text-slate-400">
+          <button id="playAudioBtn" title="Escuchar audio" class="hover:text-blue-400 p-2"><i class="fa-solid fa-volume-high text-sm"></i></button>
+          <button id="copyBtn" title="Copiar traducción" class="hover:text-blue-400 p-2"><i class="fa-regular fa-copy text-sm"></i></button>
+        </div>
+      </div>
+      <div class="flex-1 min-h-[160px]">
+        <div id="loader" class="hidden flex flex-col items-center justify-center py-10 space-y-3 text-blue-400">
+          <i class="fa-solid fa-circle-notch fa-spin text-3xl"></i>
+          <span class="text-xs font-mono text-slate-400">Procesando semántica y fonética...</span>
+        </div>
+        <div id="outputText" class="text-base md:text-lg text-slate-100 font-medium select-text"></div>
+        <div id="ipaText" class="text-sm font-mono text-indigo-400 mt-2"></div>
+      </div>
+      <div id="contextSection" class="hidden mt-4 pt-4 border-t border-slate-800 space-y-3">
+        <div>
+          <h3 class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5"><i class="fa-solid fa-shuffle text-blue-400"></i> Alternativas</h3>
+          <div id="alternativesContainer" class="space-y-2"></div>
+        </div>
+        <div id="nuanceBox" class="hidden bg-slate-900/80 rounded-xl p-3.5 border border-slate-800 text-xs text-slate-300">
+          <div class="font-semibold text-blue-400 mb-1 flex items-center gap-1.5"><i class="fa-regular fa-lightbulb"></i> Matiz Cultural / Uso:</div>
+          <p id="nuanceText"></p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const inputText = document.getElementById('inputText');
+    const outputText = document.getElementById('outputText');
+    const ipaText = document.getElementById('ipaText');
+    const translateBtn = document.getElementById('translateBtn');
+    const loader = document.getElementById('loader');
+    const contextSection = document.getElementById('contextSection');
+    const alternativesContainer = document.getElementById('alternativesContainer');
+    const nuanceBox = document.getElementById('nuanceBox');
+    const nuanceText = document.getElementById('nuanceText');
+    const toneBadge = document.getElementById('toneBadge');
+    const playAudioBtn = document.getElementById('playAudioBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const swapLangBtn = document.getElementById('swapLangBtn');
+    const sourceLang = document.getElementById('sourceLang');
+    const targetLang = document.getElementById('targetLang');
+
+    const VOICE_MAP = {
+      'en': 'en-US-ChristopherNeural',
+      'es': 'es-ES-AlvaroNeural',
+      'fr': 'fr-FR-HenriNeural',
+      'de': 'de-DE-ConradNeural',
+      'it': 'it-IT-DiegoNeural',
+      'pt': 'pt-BR-AntonioNeural'
+    };
+
+    inputText.addEventListener('input', () => { document.getElementById('charCount').innerText = `${inputText.value.length} caracteres`; });
+    inputText.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); translateAction(); } });
+    translateBtn.addEventListener('click', translateAction);
+
+    async function translateAction() {
+      const text = inputText.value.trim();
+      if (!text) return;
+      loader.classList.remove('hidden');
+      outputText.innerText = '';
+      ipaText.innerText = '';
+      contextSection.classList.add('hidden');
+      toneBadge.classList.add('hidden');
+
+      try {
+        const response = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, source_lang: sourceLang.value, target_lang: targetLang.value, tone_preference: document.getElementById('toneSelect').value })
+        });
+        const data = await response.json();
+        outputText.innerText = data.main_translation || '';
+        if (data.ipa_target) ipaText.innerText = `/${data.ipa_target}/`;
+        if (data.tone_detected) { toneBadge.innerText = data.tone_detected; toneBadge.classList.remove('hidden'); }
+        alternativesContainer.innerHTML = '';
+        if (data.alternatives) {
+          data.alternatives.forEach(alt => {
+            const card = document.createElement('div');
+            card.className = 'bg-slate-900/50 p-2.5 rounded-xl border border-slate-800 flex justify-between items-start text-xs';
+            card.innerHTML = `<div class="pr-2"><div class="font-medium text-slate-200">${alt.text}</div><div class="text-[11px] text-slate-400 mt-0.5">${alt.context}</div></div><span class="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-mono">${alt.register}</span>`;
+            alternativesContainer.appendChild(card);
+          });
+        }
+        if (data.cultural_nuances && data.cultural_nuances.length > 0) {
+          nuanceText.innerText = data.cultural_nuances.join(" ");
+          nuanceBox.classList.remove('hidden');
+        } else { nuanceBox.classList.add('hidden'); }
+        contextSection.classList.remove('hidden');
+      } catch (err) {
+        outputText.innerText = 'Error al procesar la traducción.';
+      } finally {
+        loader.classList.add('hidden');
+      }
+    }
+
+    playAudioBtn.addEventListener('click', async () => {
+      const text = outputText.innerText;
+      if (!text) return;
+      playAudioBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin text-sm text-blue-400"></i>';
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice: VOICE_MAP[targetLang.value] || 'en-US-ChristopherNeural' })
+        });
+        const blob = await res.blob();
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.play();
+      } catch(e) {} finally { playAudioBtn.innerHTML = '<i class="fa-solid fa-volume-high text-sm"></i>'; }
+    });
+
+    copyBtn.addEventListener('click', () => {
+      if (!outputText.innerText) return;
+      navigator.clipboard.writeText(outputText.innerText);
+      copyBtn.innerHTML = '<i class="fa-solid fa-check text-emerald-400 text-sm"></i>';
+      setTimeout(() => copyBtn.innerHTML = '<i class="fa-regular fa-copy text-sm"></i>', 2000);
+    });
+
+    swapLangBtn.addEventListener('click', () => {
+      if (sourceLang.value === 'auto') return;
+      const temp = sourceLang.value;
+      sourceLang.value = targetLang.value;
+      targetLang.value = temp;
+      const tempText = inputText.value;
+      inputText.value = outputText.innerText;
+      outputText.innerText = tempText;
+    });
+
+    clearBtn.addEventListener('click', () => {
+      inputText.value = ''; outputText.innerText = ''; ipaText.innerText = '';
+      contextSection.classList.add('hidden'); toneBadge.classList.add('hidden');
+      document.getElementById('charCount').innerText = '0 caracteres';
+    });
+  </script>
+</body>
+</html>
