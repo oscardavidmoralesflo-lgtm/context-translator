@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import google.generativeai as genai
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -34,47 +34,76 @@ class TTSRequest(BaseModel):
     voice: str = "en-US-ChristopherNeural"
 
 SYSTEM_PROMPT = """
-Eres un motor de traducción contextual y lingüista de élite. Proporciona traducciones precisas junto con un análisis profundo del contexto cultural, tono, matices y transcripción fonética IPA.
-Responde ÚNICAMENTE con un JSON válido con esta estructura:
+Eres un lingüista y motor de traducción contextual avanzado. Tu objetivo es desglosar de forma exhaustiva TODOS los posibles significados y usos de la palabra o frase según cada contexto.
+
+Debes responder EXCLUSIVAMENTE con un JSON válido con esta estructura:
 {
-  "main_translation": "Traducción principal más natural y precisa",
-  "ipa_target": "Transcripción fonética IPA",
-  "tone_detected": "Tono (ej. Formal, Coloquial, Corporativo)",
-  "alternatives": [
+  "main_translation": "Traducción más común y natural",
+  "ipa_target": "Transcripción fonética IPA de la traducción principal",
+  "all_meanings": [
     {
-      "text": "Frase alternativa",
-      "context": "Cuándo usar esta opción",
-      "register": "Formal / Informal / Slang"
+      "context_category": "Coloquial / Diario",
+      "translation": "Traducción específica para este contexto",
+      "example_usage": "Ejemplo en una frase corta",
+      "nuance": "Cuándo y por qué se usa aquí"
+    },
+    {
+      "context_category": "Formal / Profesional",
+      "translation": "Traducción formal",
+      "example_usage": "Ejemplo formal",
+      "nuance": "Uso en correos, negocios o reuniones"
+    },
+    {
+      "context_category": "Slang / Modismo / Jerga",
+      "translation": "Traducción informal / modismo",
+      "example_usage": "Ejemplo informal",
+      "nuance": "Matiz cultural o regional"
+    },
+    {
+      "context_category": "Otros significados / Acepciones",
+      "translation": "Significado alternativo o secundario",
+      "example_usage": "Ejemplo de uso",
+      "nuance": "Significados secundarios o dobles sentidos"
     }
   ],
-  "cultural_nuances": [
-    "Explicación de modismos o notas culturales relevantes"
-  ]
+  "pronunciation_tip": "Consejo clave sobre fonética, entonación o enlace de sonidos"
 }
 """
 
 @app.get("/")
 async def read_root():
-    if os.path.exists("static/index.html"):
-        return FileResponse("static/index.html")
-    elif os.path.exists("index.html"):
+    if os.path.exists("index.html"):
         return FileResponse("index.html")
-    return HTMLResponse("<h2>Error: No se encontró el archivo index.html en el repositorio.</h2>")
+    elif os.path.exists("static/index.html"):
+        return FileResponse("static/index.html")
+    return HTMLResponse("<h2>Error: No se encontró index.html</h2>")
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada.")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ERROR: La variable GEMINI_API_KEY no está configurada en Render.")
+
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
     try:
+        genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
-        prompt = f"{SYSTEM_PROMPT}\nTexto: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
+        
+        prompt = f"""
+        {SYSTEM_PROMPT}
+
+        Texto/Palabra a analizar: "{req.text}"
+        Idioma de origen: {req.source_lang}
+        Idioma de destino: {req.target_lang}
+        Tono preferido: {req.tone_preference}
+        """
+
         response = await asyncio.to_thread(model.generate_content, prompt)
         return json.loads(response.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error en Gemini API: {str(e)}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
@@ -89,9 +118,6 @@ async def generate_speech(req: TTSRequest):
         return Response(content=bytes(audio_stream), media_type="audio/mpeg")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
