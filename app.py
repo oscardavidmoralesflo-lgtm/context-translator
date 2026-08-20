@@ -28,35 +28,41 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "en-US-ChristopherNeural"
 
-SYSTEM_PROMPT = """
-Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa todos sus significados y contextos.
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto previo ni bloques markdown):
+# Sesión HTTP persistente con Keep-Alive y Connection Pooling para máxima velocidad
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
+session.mount("https://", adapter)
+
+# Modelo directo de alta velocidad
+ACTIVE_MODEL = "models/gemini-3.6-flash"
+
+SYSTEM_PROMPT = """Eres un lingüista y traductor contextual de élite. Sé conciso, directo y rápido.
+Responde ÚNICAMENTE en JSON con esta estructura exacta:
 {
-  "main_translation": "Traducción principal más precisa",
-  "ipa_target": "Transcripción fonética IPA de la traducción principal",
+  "main_translation": "Traducción más natural",
+  "ipa_target": "IPA",
   "all_meanings": [
     {
       "context_category": "Coloquial / Diario",
-      "translation": "Traducción en este contexto",
-      "example_usage": "Ejemplo corto de uso",
-      "nuance": "Explicación de cuándo usarlo"
+      "translation": "Traducción coloquial",
+      "example_usage": "Ejemplo corto",
+      "nuance": "Uso clave"
     },
     {
       "context_category": "Formal / Profesional",
       "translation": "Traducción formal",
-      "example_usage": "Ejemplo en contexto laboral/académico",
-      "nuance": "Uso adecuado"
+      "example_usage": "Ejemplo formal",
+      "nuance": "Uso clave"
     },
     {
       "context_category": "Slang / Modismo / Otros",
-      "translation": "Significado alternativo o modismo",
-      "example_usage": "Ejemplo de uso",
-      "nuance": "Matiz cultural o regional"
+      "translation": "Significado o modismo",
+      "example_usage": "Ejemplo corto",
+      "nuance": "Uso clave"
     }
   ],
-  "pronunciation_tip": "Consejo fonético o de entonación"
-}
-"""
+  "pronunciation_tip": "Tip fonético conciso (1 frase)"
+}"""
 
 @app.get("/")
 async def read_root():
@@ -64,73 +70,41 @@ async def read_root():
         return FileResponse("index.html")
     elif os.path.exists("static/index.html"):
         return FileResponse("static/index.html")
-    return HTMLResponse("<h2>Error: No se encontró index.html</h2>")
+    return HTMLResponse("<h2>Context Translator Live</h2>")
 
-def get_active_model_name(api_key: str) -> str:
-    """Consulta los modelos activos de tu cuenta en tiempo real."""
-    headers = {"x-goog-api-key": api_key}
-    url = "https://generativelanguage.googleapis.com/v1beta/models"
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            models = data.get("models", [])
-            supported = [
-                m["name"] for m in models 
-                if "generateContent" in m.get("supportedGenerationMethods", [])
-            ]
-            print(f"[DEBUG] Modelos activos en tu clave: {supported}", flush=True)
-
-            # Prioridad 1: Versión 3.6
-            for m in supported:
-                if "3.6" in m:
-                    return m
-            # Prioridad 2: Cualquier versión Flash activa
-            for m in supported:
-                if "flash" in m.lower():
-                    return m
-            # Prioridad 3: El primer modelo disponible
-            if supported:
-                return supported[0]
-    except Exception as e:
-        print(f"[DEBUG] Error listando modelos: {e}", flush=True)
-
-    # Fallback directo al modelo oficial vigente
-    return "models/gemini-3.6-flash"
+def fetch_gemini_response(api_key: str, user_query: str):
+    url = f"https://generativelanguage.googleapis.com/v1beta/{ACTIVE_MODEL}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key
+    }
+    payload = {
+        "contents": [{"parts": [{"text": user_query}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.2,
+            "maxOutputTokens": 700
+        }
+    }
+    return session.post(url, headers=headers, json=payload, timeout=15)
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en Render.")
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada.")
 
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
-    model_identifier = get_active_model_name(api_key)
-    if not model_identifier.startswith("models/"):
-        model_identifier = f"models/{model_identifier}"
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_identifier}:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key
-    }
-
     user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
 
-    payload = {
-        "contents": [{"parts": [{"text": user_query}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json"
-        }
-    }
-
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        # Llamada HTTP en hilo no bloqueante
+        res = await asyncio.to_thread(fetch_gemini_response, api_key, user_query)
+
         if res.status_code != 200:
-            print(f"[ERROR] Llamada a {url} falló: {res.status_code} - {res.text}", flush=True)
             raise HTTPException(status_code=500, detail=f"Error Gemini API ({res.status_code}): {res.text}")
 
         data = res.json()
@@ -146,7 +120,7 @@ async def translate(req: TranslationRequest):
         return json.loads(raw_text.strip())
 
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="El modelo no devolvió un JSON estructurado.")
+        raise HTTPException(status_code=500, detail="Respuesta del modelo inválida.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
