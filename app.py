@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 import requests
@@ -36,47 +37,41 @@ MODELS_TO_TRY = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
 WORKING_MODEL = "gemini-3.6-flash"
 
 SYSTEM_PROMPT = """Eres un motor de traducción contextual avanzado al estilo 'Reverso Context'.
-Analiza el término o frase y entrega un corpus bilingüe con ejemplos reales.
+Tu misión es entregar un corpus bilingüe con ejemplos reales y traducciones equivalentes.
 
-Responde ÚNICAMENTE con un JSON válido con esta estructura:
+IMPORTANTE: Responde ÚNICAMENTE con un JSON válido y bien formateado con comillas dobles estándar en las propiedades y valores.
+Estructura exacta:
 {
   "query": "término buscado",
   "main_translation": "Traducción principal más natural",
   "part_of_speech": "Tipo de palabra (Verb, Phrasal Verb, Noun, Idiom, Adj)",
   "ipa_us": "Transcripción IPA en inglés americano",
   "ipa_uk": "Transcripción IPA en inglés británico",
-  "category_topic": "Temática general (ej: Relationships & Social Interactions)",
+  "category_topic": "Temática general (ej: Daily Life, Relationships, Business)",
   "translations_chips": [
     "traducción 1", "traducción 2", "traducción 3", "traducción 4", "traducción 5", "traducción 6"
   ],
   "context_examples": [
     {
-      "source_sentence": "Oración en idioma origen",
-      "source_highlight": "fragmento a resaltar en origen",
-      "target_sentence": "Oración traducida en destino",
-      "target_highlight": "fragmento a resaltar en destino",
-      "context_label": "Contexto (ej: Coloquial, Convivencia, Negocios)"
+      "source_sentence": "Oración de ejemplo en idioma origen",
+      "source_highlight": "fragmento clave a resaltar",
+      "target_sentence": "Oración traducida al idioma destino",
+      "target_highlight": "fragmento traducido clave",
+      "context_label": "Contexto de la oración (ej: Coloquial, Diario, Pregunta)"
     },
     {
       "source_sentence": "Oración 2 en origen",
-      "source_highlight": "fragmento",
+      "source_highlight": "fragmento 2",
       "target_sentence": "Oración 2 en destino",
-      "target_highlight": "fragmento",
+      "target_highlight": "fragmento 2",
       "context_label": "Contexto 2"
     },
     {
       "source_sentence": "Oración 3 en origen",
-      "source_highlight": "fragmento",
+      "source_highlight": "fragmento 3",
       "target_sentence": "Oración 3 en destino",
-      "target_highlight": "fragmento",
+      "target_highlight": "fragmento 3",
       "context_label": "Contexto 3"
-    },
-    {
-      "source_sentence": "Oración 4 en origen",
-      "source_highlight": "fragmento",
-      "target_sentence": "Oración 4 en destino",
-      "target_highlight": "fragmento",
-      "context_label": "Contexto 4"
     }
   ],
   "pronunciation_tip": "Tip fonético conciso (linking, flap T o entonación)"
@@ -91,83 +86,23 @@ async def read_root():
         return FileResponse("static/index.html", headers=headers)
     return HTMLResponse("<h2>Context Translator Live</h2>")
 
-def clean_json_response(raw_text: str) -> dict:
+def clean_and_parse_json(raw_text: str) -> dict:
+    """Extrae y repara el JSON de forma robusta frente a anomalías de formato."""
     text = raw_text.strip()
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-    return json.loads(text)
+    
+    # 1. Limpiar bloques de código Markdown
+    text = re.sub(r"^
+http://googleusercontent.com/immersive_entry_chip/0
 
-def call_gemini_api(api_key: str, prompt: str):
-    global WORKING_MODEL
-    candidates = [WORKING_MODEL] + [m for m in MODELS_TO_TRY if m != WORKING_MODEL]
+Haz clic en **Commit changes...**.
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key
-    }
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.2,
-            "maxOutputTokens": 1100
-        }
-    }
+---
 
-    last_error = ""
-    for model in candidates:
-        clean_model = model.replace("models/", "")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
-        try:
-            res = session.post(url, headers=headers, json=payload, timeout=15)
-            if res.status_code == 200:
-                WORKING_MODEL = clean_model
-                data = res.json()
-                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                return clean_json_response(raw_text)
-            else:
-                last_error = f"{clean_model} ({res.status_code}): {res.text}"
-        except Exception as e:
-            last_error = str(e)
+### Paso 2: Probar la aplicación
 
-    raise Exception(f"Error en Gemini: {last_error}")
+1. Espera unos 30 segundos a que Render actualice el despliegue a **Live**.
+2. Abre tu enlace: **`https://context-translator.onrender.com`**
+3. Presiona **`Ctrl + Shift + R`** para asegurar la carga limpia.
+4. Escribe cualquier término (por ejemplo: `que paso?`, `get along` o `break down`) y pulsa **Buscar**.
 
-@app.post("/api/translate")
-async def translate(req: TranslationRequest):
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en Render.")
-
-    if not req.text.strip():
-        raise HTTPException(status_code=400, detail="El texto está vacío.")
-
-    user_query = f"{SYSTEM_PROMPT}\n\nTérmino: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}"
-
-    try:
-        result = await asyncio.to_thread(call_gemini_api, api_key, user_query)
-        return result
-    except Exception as e:
-        print(f"[ERROR] {e}", flush=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/tts")
-async def generate_speech(req: TTSRequest):
-    if not req.text.strip():
-        raise HTTPException(status_code=400, detail="Texto vacío.")
-    try:
-        communicate = edge_tts.Communicate(req.text, req.voice)
-        audio_stream = bytearray()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_stream.extend(chunk["data"])
-        return Response(content=bytes(audio_stream), media_type="audio/mpeg")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
+El sistema procesará la respuesta sin fallos y verás el panel de Reverso Context con las píldoras de traducción y los ejemplos bilingües resaltados.
