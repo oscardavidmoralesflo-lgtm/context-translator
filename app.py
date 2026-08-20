@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import asyncio
 import requests
@@ -9,7 +8,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Contextual Reverso Translator")
+app = FastAPI(title="Contextual Neural Translator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,87 +21,147 @@ app.add_middleware(
 class TranslationRequest(BaseModel):
     text: str
     source_lang: str = "auto"
-    target_lang: str = "es"
+    target_lang: str = "en"
     tone_preference: str = "natural"
 
 class TTSRequest(BaseModel):
     text: str
     voice: str = "en-US-ChristopherNeural"
 
+# Sesión HTTP persistente para máxima velocidad
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 session.mount("https://", adapter)
 
-MODELS_TO_TRY = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
+# Modelos oficiales de la serie Gemini 3
+MODELS_TO_TRY = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
+]
+
 WORKING_MODEL = "gemini-3.6-flash"
 
-SYSTEM_PROMPT = """Eres un motor de traducción contextual avanzado al estilo 'Reverso Context'.
-Tu misión es entregar un corpus bilingüe con ejemplos reales y traducciones equivalentes.
-
-IMPORTANTE: Responde ÚNICAMENTE con un JSON válido y bien formateado con comillas dobles estándar en las propiedades y valores.
-Estructura exacta:
+SYSTEM_PROMPT = """Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa sus significados y contextos de forma concisa y directa.
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto adicional ni explicaciones fuera del JSON):
 {
-  "query": "término buscado",
-  "main_translation": "Traducción principal más natural",
-  "part_of_speech": "Tipo de palabra (Verb, Phrasal Verb, Noun, Idiom, Adj)",
-  "ipa_us": "Transcripción IPA en inglés americano",
-  "ipa_uk": "Transcripción IPA en inglés británico",
-  "category_topic": "Temática general (ej: Daily Life, Relationships, Business)",
-  "translations_chips": [
-    "traducción 1", "traducción 2", "traducción 3", "traducción 4", "traducción 5", "traducción 6"
-  ],
-  "context_examples": [
+  "main_translation": "Traducción principal más precisa",
+  "ipa_target": "Transcripción fonética IPA de la traducción principal",
+  "all_meanings": [
     {
-      "source_sentence": "Oración de ejemplo en idioma origen",
-      "source_highlight": "fragmento clave a resaltar",
-      "target_sentence": "Oración traducida al idioma destino",
-      "target_highlight": "fragmento traducido clave",
-      "context_label": "Contexto de la oración (ej: Coloquial, Diario, Pregunta)"
+      "context_category": "Coloquial / Diario",
+      "translation": "Traducción en este contexto",
+      "example_usage": "Ejemplo corto de uso",
+      "nuance": "Explicación de cuándo usarlo"
     },
     {
-      "source_sentence": "Oración 2 en origen",
-      "source_highlight": "fragmento 2",
-      "target_sentence": "Oración 2 en destino",
-      "target_highlight": "fragmento 2",
-      "context_label": "Contexto 2"
+      "context_category": "Formal / Profesional",
+      "translation": "Traducción formal",
+      "example_usage": "Ejemplo en contexto laboral/académico",
+      "nuance": "Uso adecuado"
     },
     {
-      "source_sentence": "Oración 3 en origen",
-      "source_highlight": "fragmento 3",
-      "target_sentence": "Oración 3 en destino",
-      "target_highlight": "fragmento 3",
-      "context_label": "Contexto 3"
+      "context_category": "Slang / Modismo / Otros",
+      "translation": "Significado alternativo o modismo",
+      "example_usage": "Ejemplo de uso",
+      "nuance": "Matiz cultural o regional"
     }
   ],
-  "pronunciation_tip": "Tip fonético conciso (linking, flap T o entonación)"
+  "pronunciation_tip": "Consejo fonético o de entonación conciso"
 }"""
 
 @app.get("/")
 async def read_root():
-    headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
     if os.path.exists("index.html"):
-        return FileResponse("index.html", headers=headers)
+        return FileResponse("index.html")
     elif os.path.exists("static/index.html"):
-        return FileResponse("static/index.html", headers=headers)
+        return FileResponse("static/index.html")
     return HTMLResponse("<h2>Context Translator Live</h2>")
 
-def clean_and_parse_json(raw_text: str) -> dict:
-    """Extrae y repara el JSON de forma robusta frente a anomalías de formato."""
+def clean_json_response(raw_text: str) -> dict:
     text = raw_text.strip()
-    
-    # 1. Limpiar bloques de código Markdown
-    text = re.sub(r"^
-http://googleusercontent.com/immersive_entry_chip/0
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    return json.loads(text)
 
-Haz clic en **Commit changes...**.
+def call_gemini_api(api_key: str, prompt: str):
+    global WORKING_MODEL
 
----
+    # Intentar primero con el modelo que funcionó, luego con las variantes Gemini 3
+    candidates = [WORKING_MODEL] + [m for m in MODELS_TO_TRY if m != WORKING_MODEL]
 
-### Paso 2: Probar la aplicación
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key
+    }
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.2,
+            "maxOutputTokens": 800
+        }
+    }
 
-1. Espera unos 30 segundos a que Render actualice el despliegue a **Live**.
-2. Abre tu enlace: **`https://context-translator.onrender.com`**
-3. Presiona **`Ctrl + Shift + R`** para asegurar la carga limpia.
-4. Escribe cualquier término (por ejemplo: `que paso?`, `get along` o `break down`) y pulsa **Buscar**.
+    last_error = ""
+    for model in candidates:
+        clean_model = model.replace("models/", "")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
+        
+        try:
+            res = session.post(url, headers=headers, json=payload, timeout=15)
+            if res.status_code == 200:
+                WORKING_MODEL = clean_model
+                data = res.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                return clean_json_response(raw_text)
+            else:
+                last_error = f"{clean_model} (HTTP {res.status_code}): {res.text}"
+                print(f"[WARN] Falló {clean_model}: {res.status_code} - {res.text}", flush=True)
+        except Exception as e:
+            last_error = f"{clean_model} error: {str(e)}"
+            print(f"[WARN] Error con {clean_model}: {e}", flush=True)
 
-El sistema procesará la respuesta sin fallos y verás el panel de Reverso Context con las píldoras de traducción y los ejemplos bilingües resaltados.
+    raise Exception(f"No se pudo completar con Gemini. Detalle: {last_error}")
+
+@app.post("/api/translate")
+async def translate(req: TranslationRequest):
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en Render.")
+
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="El texto está vacío.")
+
+    user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
+
+    try:
+        result = await asyncio.to_thread(call_gemini_api, api_key, user_query)
+        return result
+    except Exception as e:
+        print(f"[ERROR] {e}", flush=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/tts")
+async def generate_speech(req: TTSRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Texto vacío.")
+    try:
+        communicate = edge_tts.Communicate(req.text, req.voice)
+        audio_stream = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_stream.extend(chunk["data"])
+        return Response(content=bytes(audio_stream), media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
