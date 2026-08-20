@@ -31,7 +31,7 @@ class TTSRequest(BaseModel):
 
 SYSTEM_PROMPT = """
 Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa todos sus significados y contextos.
-Responde ÚNICAMENTE con un JSON válido con esta estructura:
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto introductorio ni bloques de código extra):
 {
   "main_translation": "Traducción principal más precisa",
   "ipa_target": "Transcripción fonética IPA de la traducción principal",
@@ -59,6 +59,16 @@ Responde ÚNICAMENTE con un JSON válido con esta estructura:
 }
 """
 
+# Lista de modelos compatibles en orden de preferencia
+CANDIDATE_MODELS = [
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-pro-latest",
+    "gemini-pro"
+]
+
 @app.get("/")
 async def read_root():
     if os.path.exists("index.html"):
@@ -73,34 +83,47 @@ async def translate(req: TranslationRequest):
     api_key = raw_key.strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Variable GEMINI_API_KEY no encontrada en Render.")
+        raise HTTPException(status_code=500, detail="Variable GEMINI_API_KEY no configurada en Render.")
 
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Texto vacío.")
 
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            generation_config={"response_mime_type": "application/json"}
-        )
+    genai.configure(api_key=api_key)
 
-        prompt = f"""{SYSTEM_PROMPT}
+    prompt = f"""{SYSTEM_PROMPT}
 
 Texto a traducir/analizar: "{req.text}"
 Idioma origen: {req.source_lang}
 Idioma destino: {req.target_lang}
 Tono/Énfasis: {req.tone_preference}"""
 
-        response = await asyncio.to_thread(model.generate_content, prompt)
-        text_content = response.text.strip()
-        
-        return json.loads(text_content)
+    last_error = None
+    
+    # Intentar con la lista de modelos disponibles
+    for model_name in CANDIDATE_MODELS:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response = await asyncio.to_thread(model.generate_content, prompt)
+            raw_text = response.text.strip()
 
-    except Exception as e:
-        print("=== ERROR DETALLADO ===")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error con Gemini: {str(e)}")
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:]
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3]
+
+            return json.loads(raw_text.strip())
+        except Exception as e:
+            last_error = e
+            continue
+
+    print("=== ERROR DETALLADO ===")
+    print(traceback.format_exc())
+    raise HTTPException(status_code=500, detail=f"No se pudo conectar con ningún modelo Gemini: {str(last_error)}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
