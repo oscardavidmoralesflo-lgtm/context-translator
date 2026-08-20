@@ -71,24 +71,18 @@ async def translate(req: TranslationRequest):
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en Render.")
+        print("ERROR: GEMINI_API_KEY está vacía en las variables de entorno.", flush=True)
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada.")
 
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
-    user_query = f"{SYSTEM_PROMPT}\n\nTexto: \"{req.text}\"\nIdioma origen: {req.source_lang}\nIdioma destino: {req.target_lang}\nTono: {req.tone_preference}"
+    user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
 
-    # Modelos a probar en orden
-    models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro"
-    ]
+    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"]
+    last_err = ""
 
-    last_error_detail = ""
-
-    for model in models_to_try:
+    for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -111,12 +105,13 @@ async def translate(req: TranslationRequest):
                     raw_text = raw_text[:-3]
                 return json.loads(raw_text.strip())
             else:
-                last_error_detail = f"Status {res.status_code}: {res.text}"
-        except Exception as err:
-            last_error_detail = str(err)
-            continue
+                last_err = f"Status {res.status_code}: {res.text}"
+                print(f"Fallo modelo {model}: {last_err}", flush=True)
+        except Exception as e:
+            last_err = str(e)
+            print(f"Excepción con {model}: {last_err}", flush=True)
 
-    raise HTTPException(status_code=500, detail=f"Error conectando con Gemini: {last_error_detail}")
+    raise HTTPException(status_code=500, detail=f"Error Gemini: {last_err}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
