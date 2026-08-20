@@ -1,5 +1,5 @@
 fastapi
 uvicorn
-google-generativeai
+requests
 edge-tts
 pydantic
