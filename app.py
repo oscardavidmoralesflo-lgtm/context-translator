@@ -28,13 +28,21 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "en-US-ChristopherNeural"
 
-# Sesión persistente para respuestas ultrarrápidas
+# Sesión HTTP persistente para máxima velocidad
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 session.mount("https://", adapter)
 
-# Modelo activo fijado en memoria
-WORKING_MODEL = "models/gemini-3.6-flash"
+# Modelos oficiales de la serie Gemini 3
+MODELS_TO_TRY = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
+]
+
+WORKING_MODEL = "gemini-3.6-flash"
 
 SYSTEM_PROMPT = """Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa sus significados y contextos de forma concisa y directa.
 Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto adicional ni explicaciones fuera del JSON):
@@ -51,7 +59,7 @@ Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto a
     {
       "context_category": "Formal / Profesional",
       "translation": "Traducción formal",
-      "example_usage": "Ejemplo formal",
+      "example_usage": "Ejemplo en contexto laboral/académico",
       "nuance": "Uso adecuado"
     },
     {
@@ -73,7 +81,6 @@ async def read_root():
     return HTMLResponse("<h2>Context Translator Live</h2>")
 
 def clean_json_response(raw_text: str) -> dict:
-    """Extrae el JSON de forma segura incluso si el modelo incluye bloques markdown."""
     text = raw_text.strip()
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
@@ -84,10 +91,8 @@ def clean_json_response(raw_text: str) -> dict:
 def call_gemini_api(api_key: str, prompt: str):
     global WORKING_MODEL
 
-    # Lista ordenada: primero 3.6-flash, luego alternativas vigentes
-    candidate_models = [WORKING_MODEL, "models/gemini-3.6-flash", "models/gemini-1.5-flash-latest"]
-    # Eliminar duplicados manteniendo orden
-    candidate_models = list(dict.fromkeys(candidate_models))
+    # Intentar primero con el modelo que funcionó, luego con las variantes Gemini 3
+    candidates = [WORKING_MODEL] + [m for m in MODELS_TO_TRY if m != WORKING_MODEL]
 
     headers = {
         "Content-Type": "application/json",
@@ -103,23 +108,25 @@ def call_gemini_api(api_key: str, prompt: str):
     }
 
     last_error = ""
-    for model in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent"
+    for model in candidates:
+        clean_model = model.replace("models/", "")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
+        
         try:
             res = session.post(url, headers=headers, json=payload, timeout=15)
             if res.status_code == 200:
-                WORKING_MODEL = model  # Recordar el modelo que funcionó
+                WORKING_MODEL = clean_model
                 data = res.json()
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                 return clean_json_response(raw_text)
             else:
-                last_error = f"{model} retornó {res.status_code}: {res.text}"
-                print(f"[WARN] {last_error}", flush=True)
+                last_error = f"{clean_model} (HTTP {res.status_code}): {res.text}"
+                print(f"[WARN] Falló {clean_model}: {res.status_code} - {res.text}", flush=True)
         except Exception as e:
-            last_error = str(e)
-            print(f"[WARN] Error con {model}: {last_error}", flush=True)
+            last_error = f"{clean_model} error: {str(e)}"
+            print(f"[WARN] Error con {clean_model}: {e}", flush=True)
 
-    raise Exception(f"No se pudo completar con Gemini: {last_error}")
+    raise Exception(f"No se pudo completar con Gemini. Detalle: {last_error}")
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
