@@ -30,7 +30,7 @@ class TTSRequest(BaseModel):
 
 SYSTEM_PROMPT = """
 Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa todos sus significados y contextos.
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto previo ni bloques de código extra):
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto previo ni bloques markdown):
 {
   "main_translation": "Traducción principal más precisa",
   "ipa_target": "Transcripción fonética IPA de la traducción principal",
@@ -71,7 +71,7 @@ async def translate(req: TranslationRequest):
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
 
     if not api_key:
-        print("ERROR: GEMINI_API_KEY está vacía en las variables de entorno.", flush=True)
+        print("ERROR: GEMINI_API_KEY no encontrada en Render.", flush=True)
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada.")
 
     if not req.text.strip():
@@ -79,12 +79,21 @@ async def translate(req: TranslationRequest):
 
     user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
 
-    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"]
-    last_err = ""
+    models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-exp"
+    ]
+
+    last_error_log = ""
 
     for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
+        }
         payload = {
             "contents": [{"parts": [{"text": user_query}]}],
             "generationConfig": {
@@ -93,7 +102,7 @@ async def translate(req: TranslationRequest):
         }
 
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=20)
+            res = requests.post(url, headers=headers, json=payload, timeout=25)
             if res.status_code == 200:
                 data = res.json()
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -105,13 +114,13 @@ async def translate(req: TranslationRequest):
                     raw_text = raw_text[:-3]
                 return json.loads(raw_text.strip())
             else:
-                last_err = f"Status {res.status_code}: {res.text}"
-                print(f"Fallo modelo {model}: {last_err}", flush=True)
+                last_error_log = f"Modelo {model} retornó código {res.status_code}: {res.text}"
+                print(last_error_log, flush=True)
         except Exception as e:
-            last_err = str(e)
-            print(f"Excepción con {model}: {last_err}", flush=True)
+            last_error_log = f"Excepción con {model}: {str(e)}"
+            print(last_error_log, flush=True)
 
-    raise HTTPException(status_code=500, detail=f"Error Gemini: {last_err}")
+    raise HTTPException(status_code=500, detail=f"Detalle de error Gemini: {last_error_log}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
