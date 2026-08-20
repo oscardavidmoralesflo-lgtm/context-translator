@@ -66,38 +66,6 @@ async def read_root():
         return FileResponse("static/index.html")
     return HTMLResponse("<h2>Error: No se encontró index.html</h2>")
 
-def get_dynamic_model(api_key: str):
-    """Consulta directamente a Google qué modelos están activos para tu cuenta."""
-    headers = {"x-goog-api-key": api_key}
-    for version in ["v1beta", "v1"]:
-        try:
-            url = f"https://generativelanguage.googleapis.com/{version}/models"
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                models = data.get("models", [])
-                
-                # Filtrar modelos que soporten generación de contenido
-                supported = [
-                    m["name"] for m in models 
-                    if "generateContent" in m.get("supportedGenerationMethods", [])
-                ]
-                
-                # Prioridad 1: Modelos Flash
-                for m in supported:
-                    if "flash" in m.lower():
-                        return version, m
-                
-                # Prioridad 2: Cualquier modelo Gemini disponible
-                if supported:
-                    return version, supported[0]
-            else:
-                print(f"Error listando modelos en {version}: {res.status_code} {res.text}", flush=True)
-        except Exception as e:
-            print(f"Excepción consultando {version}: {e}", flush=True)
-            
-    return "v1beta", "models/gemini-1.5-flash"
-
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -108,17 +76,19 @@ async def translate(req: TranslationRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
-    api_version, model_name = get_dynamic_model(api_key)
-    
-    # model_name ya incluye el prefijo 'models/'
-    url = f"https://generativelanguage.googleapis.com/{api_version}/{model_name}:generateContent"
+    user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
+
+    # Modelos oficiales ordenados por disponibilidad
+    candidate_models = [
+        "gemini-3.6-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+    ]
+
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": api_key
     }
-
-    user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
-
     payload = {
         "contents": [{"parts": [{"text": user_query}]}],
         "generationConfig": {
@@ -126,28 +96,32 @@ async def translate(req: TranslationRequest):
         }
     }
 
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
-        if res.status_code != 200:
-            print(f"Fallo en llamada a Gemini ({url}): {res.status_code} - {res.text}", flush=True)
-            raise HTTPException(status_code=500, detail=f"Error Gemini API ({res.status_code}): {res.text}")
+    last_error_log = ""
 
-        data = res.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:]
-        elif raw_text.startswith("```"):
-            raw_text = raw_text[3:]
-        if raw_text.endswith("```"):
-            raw_text = raw_text[:-3]
+    for model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=25)
+            if res.status_code == 200:
+                data = res.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                elif raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
 
-        return json.loads(raw_text.strip())
+                return json.loads(raw_text.strip())
+            else:
+                last_error_log = f"Modelo {model} retornó {res.status_code}: {res.text}"
+                print(last_error_log, flush=True)
+        except Exception as e:
+            last_error_log = f"Excepción con {model}: {str(e)}"
+            print(last_error_log, flush=True)
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="El modelo no devolvió un JSON válido.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=500, detail=f"Detalle de error Gemini: {last_error_log}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
