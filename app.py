@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Reverso Context Neural Translator")
+app = FastAPI(title="Contextual Reverso Translator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,46 +20,42 @@ app.add_middleware(
 
 class TranslationRequest(BaseModel):
     text: str
-    source_lang: str = "en"
+    source_lang: str = "auto"
     target_lang: str = "es"
+    tone_preference: str = "natural"
 
 class TTSRequest(BaseModel):
     text: str
     voice: str = "en-US-ChristopherNeural"
 
-# Sesión HTTP persistente para máxima velocidad
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 session.mount("https://", adapter)
 
-MODELS_TO_TRY = [
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite"
-]
+MODELS_TO_TRY = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
 WORKING_MODEL = "gemini-3.6-flash"
 
 SYSTEM_PROMPT = """Eres un motor de traducción contextual avanzado al estilo 'Reverso Context'.
-Tu misión es analizar el texto/palabra y devolver un corpus completo de traducciones y ejemplos bilingües contextuales.
+Analiza el término o frase y entrega un corpus bilingüe con ejemplos reales.
 
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
+Responde ÚNICAMENTE con un JSON válido con esta estructura:
 {
   "query": "término buscado",
-  "part_of_speech": "Tipo de palabra (ej: Phrasal Verb, Verb, Noun, Idiom, Adj)",
+  "main_translation": "Traducción principal más natural",
+  "part_of_speech": "Tipo de palabra (Verb, Phrasal Verb, Noun, Idiom, Adj)",
   "ipa_us": "Transcripción IPA en inglés americano",
   "ipa_uk": "Transcripción IPA en inglés británico",
-  "category_topic": "Temática o contexto general (ej: Relationships & Social Interactions)",
+  "category_topic": "Temática general (ej: Relationships & Social Interactions)",
   "translations_chips": [
     "traducción 1", "traducción 2", "traducción 3", "traducción 4", "traducción 5", "traducción 6"
   ],
   "context_examples": [
     {
-      "source_sentence": "Oración completa en idioma origen",
-      "source_highlight": "fragmento exacto a resaltar en origen",
-      "target_sentence": "Oración completa traducida en destino",
-      "target_highlight": "fragmento exacto a resaltar en destino",
-      "context_label": "Contexto específico de esta oración (ej: Coloquial, Convivencia, Despedida)"
+      "source_sentence": "Oración en idioma origen",
+      "source_highlight": "fragmento a resaltar en origen",
+      "target_sentence": "Oración traducida en destino",
+      "target_highlight": "fragmento a resaltar en destino",
+      "context_label": "Contexto (ej: Coloquial, Convivencia, Negocios)"
     },
     {
       "source_sentence": "Oración 2 en origen",
@@ -83,15 +79,16 @@ Responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
       "context_label": "Contexto 4"
     }
   ],
-  "pronunciation_tip": "Tip fonético o de enlace de sonidos (linking / flap T / reducciones)"
+  "pronunciation_tip": "Tip fonético conciso (linking, flap T o entonación)"
 }"""
 
 @app.get("/")
 async def read_root():
+    headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
     if os.path.exists("index.html"):
-        return FileResponse("index.html")
+        return FileResponse("index.html", headers=headers)
     elif os.path.exists("static/index.html"):
-        return FileResponse("static/index.html")
+        return FileResponse("static/index.html", headers=headers)
     return HTMLResponse("<h2>Context Translator Live</h2>")
 
 def clean_json_response(raw_text: str) -> dict:
@@ -115,7 +112,7 @@ def call_gemini_api(api_key: str, prompt: str):
         "generationConfig": {
             "responseMimeType": "application/json",
             "temperature": 0.2,
-            "maxOutputTokens": 1200
+            "maxOutputTokens": 1100
         }
     }
 
@@ -124,18 +121,18 @@ def call_gemini_api(api_key: str, prompt: str):
         clean_model = model.replace("models/", "")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
         try:
-            res = session.post(url, headers=headers, json=payload, timeout=18)
+            res = session.post(url, headers=headers, json=payload, timeout=15)
             if res.status_code == 200:
                 WORKING_MODEL = clean_model
                 data = res.json()
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
                 return clean_json_response(raw_text)
             else:
-                last_error = f"{clean_model} (HTTP {res.status_code}): {res.text}"
+                last_error = f"{clean_model} ({res.status_code}): {res.text}"
         except Exception as e:
             last_error = str(e)
 
-    raise Exception(f"Fallo en Gemini: {last_error}")
+    raise Exception(f"Error en Gemini: {last_error}")
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
@@ -147,7 +144,7 @@ async def translate(req: TranslationRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
-    user_query = f"{SYSTEM_PROMPT}\n\nTérmino/Frase: \"{req.text}\"\nIdioma origen: {req.source_lang}\nIdioma destino: {req.target_lang}"
+    user_query = f"{SYSTEM_PROMPT}\n\nTérmino: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}"
 
     try:
         result = await asyncio.to_thread(call_gemini_api, api_key, user_query)
