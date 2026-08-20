@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Contextual Neural Translator")
+app = FastAPI(title="Reverso Context Neural Translator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,9 +20,8 @@ app.add_middleware(
 
 class TranslationRequest(BaseModel):
     text: str
-    source_lang: str = "auto"
-    target_lang: str = "en"
-    tone_preference: str = "natural"
+    source_lang: str = "en"
+    target_lang: str = "es"
 
 class TTSRequest(BaseModel):
     text: str
@@ -33,43 +32,58 @@ session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 session.mount("https://", adapter)
 
-# Modelos oficiales de la serie Gemini 3
 MODELS_TO_TRY = [
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite"
+    "gemini-3.5-flash-lite"
 ]
-
 WORKING_MODEL = "gemini-3.6-flash"
 
-SYSTEM_PROMPT = """Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa sus significados y contextos de forma concisa y directa.
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto adicional ni explicaciones fuera del JSON):
+SYSTEM_PROMPT = """Eres un motor de traducción contextual avanzado al estilo 'Reverso Context'.
+Tu misión es analizar el texto/palabra y devolver un corpus completo de traducciones y ejemplos bilingües contextuales.
+
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
 {
-  "main_translation": "Traducción principal más precisa",
-  "ipa_target": "Transcripción fonética IPA de la traducción principal",
-  "all_meanings": [
+  "query": "término buscado",
+  "part_of_speech": "Tipo de palabra (ej: Phrasal Verb, Verb, Noun, Idiom, Adj)",
+  "ipa_us": "Transcripción IPA en inglés americano",
+  "ipa_uk": "Transcripción IPA en inglés británico",
+  "category_topic": "Temática o contexto general (ej: Relationships & Social Interactions)",
+  "translations_chips": [
+    "traducción 1", "traducción 2", "traducción 3", "traducción 4", "traducción 5", "traducción 6"
+  ],
+  "context_examples": [
     {
-      "context_category": "Coloquial / Diario",
-      "translation": "Traducción en este contexto",
-      "example_usage": "Ejemplo corto de uso",
-      "nuance": "Explicación de cuándo usarlo"
+      "source_sentence": "Oración completa en idioma origen",
+      "source_highlight": "fragmento exacto a resaltar en origen",
+      "target_sentence": "Oración completa traducida en destino",
+      "target_highlight": "fragmento exacto a resaltar en destino",
+      "context_label": "Contexto específico de esta oración (ej: Coloquial, Convivencia, Despedida)"
     },
     {
-      "context_category": "Formal / Profesional",
-      "translation": "Traducción formal",
-      "example_usage": "Ejemplo en contexto laboral/académico",
-      "nuance": "Uso adecuado"
+      "source_sentence": "Oración 2 en origen",
+      "source_highlight": "fragmento",
+      "target_sentence": "Oración 2 en destino",
+      "target_highlight": "fragmento",
+      "context_label": "Contexto 2"
     },
     {
-      "context_category": "Slang / Modismo / Otros",
-      "translation": "Significado alternativo o modismo",
-      "example_usage": "Ejemplo de uso",
-      "nuance": "Matiz cultural o regional"
+      "source_sentence": "Oración 3 en origen",
+      "source_highlight": "fragmento",
+      "target_sentence": "Oración 3 en destino",
+      "target_highlight": "fragmento",
+      "context_label": "Contexto 3"
+    },
+    {
+      "source_sentence": "Oración 4 en origen",
+      "source_highlight": "fragmento",
+      "target_sentence": "Oración 4 en destino",
+      "target_highlight": "fragmento",
+      "context_label": "Contexto 4"
     }
   ],
-  "pronunciation_tip": "Consejo fonético o de entonación conciso"
+  "pronunciation_tip": "Tip fonético o de enlace de sonidos (linking / flap T / reducciones)"
 }"""
 
 @app.get("/")
@@ -90,8 +104,6 @@ def clean_json_response(raw_text: str) -> dict:
 
 def call_gemini_api(api_key: str, prompt: str):
     global WORKING_MODEL
-
-    # Intentar primero con el modelo que funcionó, luego con las variantes Gemini 3
     candidates = [WORKING_MODEL] + [m for m in MODELS_TO_TRY if m != WORKING_MODEL]
 
     headers = {
@@ -103,7 +115,7 @@ def call_gemini_api(api_key: str, prompt: str):
         "generationConfig": {
             "responseMimeType": "application/json",
             "temperature": 0.2,
-            "maxOutputTokens": 800
+            "maxOutputTokens": 1200
         }
     }
 
@@ -111,9 +123,8 @@ def call_gemini_api(api_key: str, prompt: str):
     for model in candidates:
         clean_model = model.replace("models/", "")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
-        
         try:
-            res = session.post(url, headers=headers, json=payload, timeout=15)
+            res = session.post(url, headers=headers, json=payload, timeout=18)
             if res.status_code == 200:
                 WORKING_MODEL = clean_model
                 data = res.json()
@@ -121,12 +132,10 @@ def call_gemini_api(api_key: str, prompt: str):
                 return clean_json_response(raw_text)
             else:
                 last_error = f"{clean_model} (HTTP {res.status_code}): {res.text}"
-                print(f"[WARN] Falló {clean_model}: {res.status_code} - {res.text}", flush=True)
         except Exception as e:
-            last_error = f"{clean_model} error: {str(e)}"
-            print(f"[WARN] Error con {clean_model}: {e}", flush=True)
+            last_error = str(e)
 
-    raise Exception(f"No se pudo completar con Gemini. Detalle: {last_error}")
+    raise Exception(f"Fallo en Gemini: {last_error}")
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
@@ -138,7 +147,7 @@ async def translate(req: TranslationRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="El texto está vacío.")
 
-    user_query = f"{SYSTEM_PROMPT}\n\nTexto a analizar: \"{req.text}\"\nOrigen: {req.source_lang}\nDestino: {req.target_lang}\nTono: {req.tone_preference}"
+    user_query = f"{SYSTEM_PROMPT}\n\nTérmino/Frase: \"{req.text}\"\nIdioma origen: {req.source_lang}\nIdioma destino: {req.target_lang}"
 
     try:
         result = await asyncio.to_thread(call_gemini_api, api_key, user_query)
