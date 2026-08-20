@@ -31,7 +31,7 @@ class TTSRequest(BaseModel):
 
 SYSTEM_PROMPT = """
 Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa todos sus significados y contextos.
-Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto introductorio ni bloques de código extra):
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
 {
   "main_translation": "Traducción principal más precisa",
   "ipa_target": "Transcripción fonética IPA de la traducción principal",
@@ -59,15 +59,32 @@ Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto i
 }
 """
 
-# Lista de modelos compatibles en orden de preferencia
-CANDIDATE_MODELS = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-001",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-pro-latest",
-    "gemini-pro"
-]
+def get_best_available_model():
+    """Detecta automáticamente el mejor modelo activo en la cuenta."""
+    try:
+        available_models = [
+            m.name for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
+        
+        # 1. Priorizar modelos Flash
+        for m in available_models:
+            if "flash" in m.lower():
+                return m
+                
+        # 2. Priorizar cualquier modelo Gemini
+        for m in available_models:
+            if "gemini" in m.lower():
+                return m
+                
+        # 3. Fallback al primer modelo con soporte para generación
+        if available_models:
+            return available_models[0]
+            
+    except Exception as e:
+        print(f"Error listando modelos: {e}")
+        
+    return "models/gemini-1.5-flash"
 
 @app.get("/")
 async def read_root():
@@ -83,47 +100,43 @@ async def translate(req: TranslationRequest):
     api_key = raw_key.strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Variable GEMINI_API_KEY no configurada en Render.")
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en Render.")
 
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Texto vacío.")
 
-    genai.configure(api_key=api_key)
+    try:
+        genai.configure(api_key=api_key)
+        selected_model = get_best_available_model()
 
-    prompt = f"""{SYSTEM_PROMPT}
+        model = genai.GenerativeModel(
+            model_name=selected_model,
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+        prompt = f"""{SYSTEM_PROMPT}
 
 Texto a traducir/analizar: "{req.text}"
 Idioma origen: {req.source_lang}
 Idioma destino: {req.target_lang}
 Tono/Énfasis: {req.tone_preference}"""
 
-    last_error = None
-    
-    # Intentar con la lista de modelos disponibles
-    for model_name in CANDIDATE_MODELS:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            response = await asyncio.to_thread(model.generate_content, prompt)
-            raw_text = response.text.strip()
+        response = await asyncio.to_thread(model.generate_content, prompt)
+        raw_text = response.text.strip()
 
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        elif raw_text.startswith("```"):
+            raw_text = raw_text[3:]
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
 
-            return json.loads(raw_text.strip())
-        except Exception as e:
-            last_error = e
-            continue
+        return json.loads(raw_text.strip())
 
-    print("=== ERROR DETALLADO ===")
-    print(traceback.format_exc())
-    raise HTTPException(status_code=500, detail=f"No se pudo conectar con ningún modelo Gemini: {str(last_error)}")
+    except Exception as e:
+        print("=== ERROR DETALLADO ===")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error en traducción ({type(e).__name__}): {str(e)}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
