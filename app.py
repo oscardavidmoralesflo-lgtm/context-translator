@@ -1,17 +1,13 @@
 import os
 import json
 import asyncio
+import traceback
 import edge_tts
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import google.generativeai as genai
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="Contextual Neural Translator")
 
@@ -34,39 +30,32 @@ class TTSRequest(BaseModel):
     voice: str = "en-US-ChristopherNeural"
 
 SYSTEM_PROMPT = """
-Eres un lingüista y motor de traducción contextual avanzado. Tu objetivo es desglosar de forma exhaustiva TODOS los posibles significados y usos de la palabra o frase según cada contexto.
-
-Debes responder EXCLUSIVAMENTE con un JSON válido con esta estructura:
+Eres un lingüista y traductor contextual de élite. Analiza la palabra o frase y desglosa todos sus significados y contextos.
+Responde ÚNICAMENTE con un JSON válido con esta estructura:
 {
-  "main_translation": "Traducción más común y natural",
+  "main_translation": "Traducción principal más precisa",
   "ipa_target": "Transcripción fonética IPA de la traducción principal",
   "all_meanings": [
     {
       "context_category": "Coloquial / Diario",
-      "translation": "Traducción específica para este contexto",
-      "example_usage": "Ejemplo en una frase corta",
-      "nuance": "Cuándo y por qué se usa aquí"
+      "translation": "Traducción en este contexto",
+      "example_usage": "Ejemplo corto de uso",
+      "nuance": "Explicación de cuándo usarlo"
     },
     {
       "context_category": "Formal / Profesional",
       "translation": "Traducción formal",
-      "example_usage": "Ejemplo formal",
-      "nuance": "Uso en correos, negocios o reuniones"
+      "example_usage": "Ejemplo en contexto laboral/académico",
+      "nuance": "Uso adecuado"
     },
     {
-      "context_category": "Slang / Modismo / Jerga",
-      "translation": "Traducción informal / modismo",
-      "example_usage": "Ejemplo informal",
-      "nuance": "Matiz cultural o regional"
-    },
-    {
-      "context_category": "Otros significados / Acepciones",
-      "translation": "Significado alternativo o secundario",
+      "context_category": "Slang / Modismo / Otros",
+      "translation": "Significado alternativo o modismo",
       "example_usage": "Ejemplo de uso",
-      "nuance": "Significados secundarios o dobles sentidos"
+      "nuance": "Matiz cultural o regional"
     }
   ],
-  "pronunciation_tip": "Consejo clave sobre fonética, entonación o enlace de sonidos"
+  "pronunciation_tip": "Consejo fonético o de entonación"
 }
 """
 
@@ -80,30 +69,38 @@ async def read_root():
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
-    api_key = os.getenv("GEMINI_API_KEY")
+    raw_key = os.getenv("GEMINI_API_KEY", "")
+    api_key = raw_key.strip()
+
     if not api_key:
-        raise HTTPException(status_code=500, detail="ERROR: La variable GEMINI_API_KEY no está configurada en Render.")
+        raise HTTPException(status_code=500, detail="Variable GEMINI_API_KEY no encontrada en Render.")
 
     if not req.text.strip():
-        raise HTTPException(status_code=400, detail="El texto está vacío.")
+        raise HTTPException(status_code=400, detail="Texto vacío.")
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
-        
-        prompt = f"""
-        {SYSTEM_PROMPT}
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config={"response_mime_type": "application/json"}
+        )
 
-        Texto/Palabra a analizar: "{req.text}"
-        Idioma de origen: {req.source_lang}
-        Idioma de destino: {req.target_lang}
-        Tono preferido: {req.tone_preference}
-        """
+        prompt = f"""{SYSTEM_PROMPT}
+
+Texto a traducir/analizar: "{req.text}"
+Idioma origen: {req.source_lang}
+Idioma destino: {req.target_lang}
+Tono/Énfasis: {req.tone_preference}"""
 
         response = await asyncio.to_thread(model.generate_content, prompt)
-        return json.loads(response.text)
+        text_content = response.text.strip()
+        
+        return json.loads(text_content)
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en Gemini API: {str(e)}")
+        print("=== ERROR DETALLADO ===")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error con Gemini: {str(e)}")
 
 @app.post("/api/tts")
 async def generate_speech(req: TTSRequest):
