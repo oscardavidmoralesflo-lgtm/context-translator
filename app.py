@@ -3,6 +3,7 @@ import json
 import asyncio
 import edge_tts
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -52,6 +53,14 @@ Responde ÚNICAMENTE con un JSON válido con esta estructura:
 }
 """
 
+@app.get("/")
+async def read_root():
+    if os.path.exists("static/index.html"):
+        return FileResponse("static/index.html")
+    elif os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return HTMLResponse("<h2>Error: No se encontró el archivo index.html en el repositorio.</h2>")
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     if not GEMINI_API_KEY:
@@ -82,7 +91,7 @@ async def generate_speech(req: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 if os.path.exists("static"):
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
